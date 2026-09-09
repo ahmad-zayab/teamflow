@@ -1,117 +1,88 @@
 import { Injectable, UnauthorizedException, ConflictException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { PrismaService } from '../prisma/prisma.service.js';
-import * as bcrypt from 'bcrypt';
-import crypto from 'crypto';
-import { RegisterDto, LoginDto } from '@teamflow/shared';
+import { PrismaService } from '../prisma/prisma.service';
+import { RegisterDto, LoginDto } from './dto/auth.dto';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly jwtService: JwtService,
+    private readonly jwtService: JwtService
   ) {}
 
-  async register(data: RegisterDto) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { email: data.email },
-    });
+  private hashToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
 
-    if (existingUser) {
-      throw new ConflictException('Email already in use');
+  async register(dto: RegisterDto) {
+    const existing = await this.prisma.user.findUnique({ where: { email: dto.email } });
+    if (existing) {
+      throw new ConflictException('Email address is already registered');
     }
 
-    const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(data.password, saltRounds);
+    const passwordHash = crypto.createHash('sha256').update(dto.password).digest('hex');
 
     const user = await this.prisma.user.create({
       data: {
-        email: data.email,
-        name: data.name,
+        email: dto.email,
         passwordHash,
+        firstName: dto.firstName,
+        lastName: dto.lastName,
       },
     });
 
-    return this.generateTokens(user.id);
+    return this.generateTokens(user.id, user.email);
   }
 
-  async login(data: LoginDto) {
-    const user = await this.prisma.user.findUnique({
-      where: { email: data.email },
-    });
-
+  async login(dto: LoginDto) {
+    const user = await this.prisma.user.findUnique({ where: { email: dto.email } });
     if (!user) {
-      throw new UnauthorizedException('Invalid credentials');
+      throw new UnauthorizedException('Invalid email or password credentials');
     }
 
-    const isPasswordValid = await bcrypt.compare(data.password, user.passwordHash);
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
+    const hashAttempt = crypto.createHash('sha256').update(dto.password).digest('hex');
+    if (hashAttempt !== user.passwordHash) {
+      throw new UnauthorizedException('Invalid email or password credentials');
     }
 
-    return this.generateTokens(user.id);
+    return this.generateTokens(user.id, user.email);
   }
 
-  async refreshTokens(oldRefreshToken: string) {
-    const tokenHash = crypto.createHash('sha256').update(oldRefreshToken).digest('hex');
-
-    const refreshTokenRecord = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash },
-    });
-
-    if (!refreshTokenRecord || refreshTokenRecord.revokedAt || refreshTokenRecord.expiresAt < new Date()) {
-      throw new UnauthorizedException('Invalid or expired refresh token');
+  async refreshTokens(userId: string, incomingRefreshToken: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.refreshToken) {
+      throw new UnauthorizedException('Access Denied');
     }
 
-    // Revoke old token to prevent reuse (Refresh Token Rotation)
-    await this.prisma.refreshToken.update({
-      where: { id: refreshTokenRecord.id },
-      data: { revokedAt: new Date() },
-    });
+    const hashedIncoming = this.hashToken(incomingRefreshToken);
+    if (hashedIncoming !== user.refreshToken) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
 
-    return this.generateTokens(refreshTokenRecord.userId);
+    return this.generateTokens(user.id, user.email);
   }
 
-  private async generateTokens(userId: string) {
-    const payload = { sub: userId };
+  private async generateTokens(userId: string, email: string) {
+    const payload = { sub: userId, email };
 
-    const accessToken = this.jwtService.sign(payload, { expiresIn: '15m' });
-    
-    // Generate a random string for the refresh token (not a JWT)
-    const refreshToken = crypto.randomBytes(40).toString('hex');
-    const tokenHash = crypto.createHash('sha256').update(refreshToken).digest('hex');
-    
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7); // 7 days
+    const [accessToken, refreshToken] = await Promise.all([
+      this.jwtService.signAsync(payload, {
+        secret: process.env.JWT_ACCESS_SECRET || 'default-access-secret',
+        expiresIn: '15m',
+      }),
+      this.jwtService.signAsync(payload, {
+        secret: process.env.JWT_REFRESH_SECRET || 'default-refresh-secret',
+        expiresIn: '7d',
+      }),
+    ]);
 
-    await this.prisma.refreshToken.create({
-      data: {
-        userId,
-        tokenHash,
-        expiresAt,
-      },
-    });
-
-    return {
-      accessToken,
-      refreshToken,
-    };
-  }
-
-  async getMe(userId: string) {
-    const user = await this.prisma.user.findUnique({
+    const hashedRefreshToken = this.hashToken(refreshToken);
+    await this.prisma.user.update({
       where: { id: userId },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        avatarUrl: true,
-      },
+      data: { refreshToken: hashedRefreshToken },
     });
-    if (!user) {
-      throw new UnauthorizedException('User not found');
-    }
-    return user;
+
+    return { accessToken, refreshToken };
   }
 }
