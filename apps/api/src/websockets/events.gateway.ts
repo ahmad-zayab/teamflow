@@ -34,3 +34,11 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return { status: 'joined', room: `project:${projectId}` };
   }
 }
+
+  broadcastTaskMoved(projectId: string, payload: { taskId: string; newStatus: string; newOrder: number }) {
+    this.server.to(`project:${projectId}`).emit('taskMoved', payload);
+  }
+
+  broadcastTaskCreated(projectId: string, task: any) {
+    this.server.to(`project:${projectId}`).emit('taskCreated', task);
+  }
