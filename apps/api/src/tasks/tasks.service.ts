@@ -1,10 +1,16 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RealtimeGateway } from '../realtime/realtime.gateway.js';
+import { RedisService } from '../redis/redis.service.js';
 import type { CreateTaskDto, UpdateTaskDto, MoveTaskDto } from '@teamflow/shared';
 
 @Injectable()
 export class TasksService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly realtimeGateway: RealtimeGateway,
+    private readonly redisService: RedisService,
+  ) {}
 
   async create(orgId: string, data: CreateTaskDto) {
     // Verify project belongs to the org
@@ -12,7 +18,9 @@ export class TasksService {
       where: { id: data.projectId, organizationId: orgId },
     });
     
-    if (!project) throw new NotFoundException('Project not found or not in this organization');
+    if (!project) {
+      throw new NotFoundException('Project not found or not in this organization');
+    }
 
     // Get max position in column
     const maxPosResult = await this.prisma.task.aggregate({
@@ -22,7 +30,7 @@ export class TasksService {
     
     const nextPosition = (maxPosResult._max.position ?? 0) + 1;
 
-    return this.prisma.task.create({
+    const task = await this.prisma.task.create({
       data: {
         title: data.title,
         description: data.description,
@@ -31,10 +39,18 @@ export class TasksService {
         position: nextPosition,
       },
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${task.projectId}`);
+
+    // Broadcast creation event to project room
+    this.realtimeGateway.emitToProject(task.projectId, 'task:created', task);
+
+    return task;
   }
 
   async move(orgId: string, id: string, data: MoveTaskDto) {
-    return this.prisma.$transaction(async (tx) => {
+    const movedTask = await this.prisma.$transaction(async (tx) => {
       // 1. Get the task being moved and verify ownership via project
       const task = await tx.task.findUnique({
         where: { id },
@@ -113,28 +129,60 @@ export class TasksService {
         },
       });
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${movedTask.projectId}`);
+
+    // Broadcast move event to project room
+    this.realtimeGateway.emitToProject(movedTask.projectId, 'task:moved', movedTask);
+
+    return movedTask;
   }
 
   async update(orgId: string, id: string, data: UpdateTaskDto) {
     const task = await this.prisma.task.findFirst({
       where: { id, project: { organizationId: orgId } },
     });
-    if (!task) throw new NotFoundException('Task not found');
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
     
-    return this.prisma.task.update({
+    const updatedTask = await this.prisma.task.update({
       where: { id },
       data,
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${updatedTask.projectId}`);
+
+    // Broadcast update event to project room
+    this.realtimeGateway.emitToProject(updatedTask.projectId, 'task:updated', updatedTask);
+
+    return updatedTask;
   }
 
   async remove(orgId: string, id: string) {
     const task = await this.prisma.task.findFirst({
       where: { id, project: { organizationId: orgId } },
     });
-    if (!task) throw new NotFoundException('Task not found');
+    if (!task) {
+      throw new NotFoundException('Task not found');
+    }
     
-    return this.prisma.task.delete({
+    const deletedTask = await this.prisma.task.delete({
       where: { id },
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${deletedTask.projectId}`);
+
+    // Broadcast deletion event to project room
+    this.realtimeGateway.emitToProject(deletedTask.projectId, 'task:deleted', {
+      id: deletedTask.id,
+      projectId: deletedTask.projectId,
+      columnId: deletedTask.columnId,
+    });
+
+    return deletedTask;
   }
 }

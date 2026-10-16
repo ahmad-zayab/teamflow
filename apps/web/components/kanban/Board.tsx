@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { 
   DndContext, 
   DragOverlay, 
@@ -30,6 +30,13 @@ export function Board({ project }: BoardProps) {
   const [columns, setColumns] = useState<Column[]>(project.columns);
   const [activeColumn, setActiveColumn] = useState<Column | null>(null);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+
+  // Sync columns state when query cache updates in real-time (unless currently dragging)
+  useEffect(() => {
+    if (!activeTask && !activeColumn) {
+      setColumns(project.columns);
+    }
+  }, [project.columns, activeTask, activeColumn]);
 
   const queryClient = useQueryClient();
 
