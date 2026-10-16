@@ -1,10 +1,14 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
 import type { CreateColumnDto, UpdateColumnDto } from '@teamflow/shared';
 
 @Injectable()
 export class ColumnsService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {}
 
   async create(orgId: string, data: CreateColumnDto) {
     const project = await this.prisma.project.findFirst({
@@ -20,13 +24,18 @@ export class ColumnsService {
     
     const nextPosition = (maxPosResult._max.position ?? 0) + 1;
 
-    return this.prisma.column.create({
+    const column = await this.prisma.column.create({
       data: {
         name: data.name,
         projectId: data.projectId,
         position: nextPosition,
       },
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${data.projectId}`);
+
+    return column;
   }
 
   async update(orgId: string, id: string, data: UpdateColumnDto) {
@@ -35,10 +44,15 @@ export class ColumnsService {
     });
     if (!column) throw new NotFoundException('Column not found');
     
-    return this.prisma.column.update({
+    const updated = await this.prisma.column.update({
       where: { id },
       data,
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${column.projectId}`);
+
+    return updated;
   }
 
   async remove(orgId: string, id: string) {
@@ -47,8 +61,13 @@ export class ColumnsService {
     });
     if (!column) throw new NotFoundException('Column not found');
     
-    return this.prisma.column.delete({
+    const deleted = await this.prisma.column.delete({
       where: { id },
     });
+
+    // Invalidate project board cache
+    await this.redisService.del(`cache:project:${column.projectId}`);
+
+    return deleted;
   }
 }

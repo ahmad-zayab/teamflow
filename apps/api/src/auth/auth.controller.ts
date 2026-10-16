@@ -1,6 +1,7 @@
-import { Controller, Post, Body, Res, Req, UsePipes, HttpCode, HttpStatus, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Get, Body, Res, Req, UsePipes, HttpCode, HttpStatus, UnauthorizedException, UseGuards } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { AuthService } from './auth.service.js';
+import { JwtAuthGuard } from './guards/jwt-auth.guard.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { LoginSchema, RegisterSchema } from '@teamflow/shared';
 import type { LoginDto, RegisterDto } from '@teamflow/shared';
@@ -61,5 +62,12 @@ export class AuthController {
     const tokens = await this.authService.refreshTokens(refreshToken);
     this.setCookies(res, tokens.accessToken, tokens.refreshToken);
     return { message: 'Tokens refreshed' };
+  }
+
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async getMe(@Req() req: Request) {
+    const userId = (req as any).user?.id;
+    return this.authService.getMe(userId);
   }
 }

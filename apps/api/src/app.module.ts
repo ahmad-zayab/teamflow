@@ -7,6 +7,8 @@ import { OrganizationsModule } from './organizations/organizations.module.js';
 import { ProjectsModule } from './projects/projects.module.js';
 import { ColumnsModule } from './columns/columns.module.js';
 import { TasksModule } from './tasks/tasks.module.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
+import { RedisModule } from './redis/redis.module.js';
 
 @Module({
   imports: [
@@ -16,6 +18,8 @@ import { TasksModule } from './tasks/tasks.module.js';
     ProjectsModule,
     ColumnsModule,
     TasksModule,
+    RealtimeModule,
+    RedisModule,
   ],
   controllers: [AppController],
   providers: [AppService],
