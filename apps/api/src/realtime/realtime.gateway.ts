@@ -1,3 +1,9 @@
+/**
+ * @file realtime.gateway.ts
+ * @description WebSocket gateway managing real-time connections, presence status,
+ * project room joins/leaves, and task event broadcasts across TeamFlow boards.
+ */
+
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -14,6 +20,9 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { WsJwtAuthGuard } from './ws-jwt-auth.guard.js';
 
+/**
+ * Represents an active user presence record in a project room.
+ */
 interface PresenceUser {
   id: string;
   name: string;
@@ -21,6 +30,13 @@ interface PresenceUser {
   socketId: string;
 }
 
+/**
+ * RealtimeGateway handles real-time bidirectional communication over Socket.IO.
+ * - Authenticates incoming client connections via JWT.
+ * - Manages presence tracking per project room.
+ * - Enforces organization membership checks before allowing users to join project rooms.
+ * - Broadcasts task lifecycle mutations (creation, updates, deletions) to project subscribers.
+ */
 @WebSocketGateway({
   cors: {
     origin: process.env.FRONTEND_URL || 'http://localhost:3000',
@@ -42,6 +58,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly wsJwtAuthGuard: WsJwtAuthGuard,
   ) {}
 
+  /**
+   * Handles new WebSocket connections during handshake.
+   * Extracts and validates the JWT; disconnects client immediately if authentication fails.
+   */
   async handleConnection(client: Socket) {
     try {
       const token = this.wsJwtAuthGuard.extractToken(client);
@@ -65,6 +85,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  /**
+   * Cleans up client socket state upon disconnection.
+   * Removes client from all active project presence maps and broadcasts updated presence lists.
+   */
   handleDisconnect(client: Socket) {
     this.logger.log(`Client disconnected: ${client.id}`);
 
@@ -77,6 +101,10 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  /**
+   * Subscribes a client socket to a specific project room (`project:<projectId>`).
+   * Validates organization membership before granting subscription.
+   */
   @UseGuards(WsJwtAuthGuard)
   @SubscribeMessage('join:project')
   async handleJoinProject(
@@ -208,25 +236,39 @@ export class RealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.emitToProject(projectId, 'presence:update', uniqueUsers);
   }
 
-  // Broadcaster utility methods
+  /**
+   * Broadcasts an event and payload to all connected clients within a project room.
+   */
   emitToProject(projectId: string, event: string, payload: unknown) {
     if (this.server) {
       this.server.to(`project:${projectId}`).emit(event, payload);
     }
   }
 
+  /**
+   * Notifies project subscribers that a new task was created.
+   */
   broadcastTaskCreated(projectId: string, task: unknown) {
     this.emitToProject(projectId, 'task:created', task);
   }
 
+  /**
+   * Notifies project subscribers that an existing task was updated.
+   */
   broadcastTaskUpdated(projectId: string, task: unknown) {
     this.emitToProject(projectId, 'task:updated', task);
   }
 
+  /**
+   * Notifies project subscribers that a task was moved across columns or reordered.
+   */
   broadcastTaskMoved(projectId: string, task: unknown) {
     this.emitToProject(projectId, 'task:moved', task);
   }
 
+  /**
+   * Notifies project subscribers that a task was deleted.
+   */
   broadcastTaskDeleted(projectId: string, payload: { id: string; projectId: string; columnId: string }) {
     this.emitToProject(projectId, 'task:deleted', payload);
   }
